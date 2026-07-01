@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Corridor</title>
+    <meta name="description" content="The Corridor - A first-person psychological horror game.">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <!-- Mobile Not Supported -->
+    <div id="mobile-warning">
+        <div class="mobile-inner">
+            <h1>⚠ UNSUPPORTED DEVICE</h1>
+            <p>The Corridor requires a keyboard and mouse.</p>
+            <p>Please play on a desktop PC.</p>
+        </div>
+    </div>
+
+    <!-- Main Game Container (hidden on mobile via CSS) -->
+    <div id="game-container">
+
+        <!-- Render Canvas -->
+        <canvas id="gameCanvas"></canvas>
+
+        <!-- CRT Scanline Overlay -->
+        <div id="crt-overlay"></div>
+
+        <!-- Vignette -->
+        <div id="vignette"></div>
+
+        <!-- Breathing Overlay -->
+        <div id="breathing-overlay"></div>
+
+        <!-- Damage / Event Overlay -->
+        <div id="flash-overlay"></div>
+
+        <!-- Blood Splatter -->
+        <div id="blood-splatter"></div>
+
+        <!-- Static TV Effect -->
+        <canvas id="static-canvas" class="hidden"></canvas>
+
+        <!-- ================================================ -->
+        <!-- IN-GAME HUD                                      -->
+        <!-- ================================================ -->
+        <div id="hud" class="hidden">
+
+            <!-- Top Left: Player Stats -->
+            <div id="hud-topleft">
+                <div class="stat-block" id="stat-health">
+                    <div class="stat-label">HEALTH</div>
+                    <div class="stat-bar-bg"><div class="stat-bar" id="health-bar" style="background:#c0392b;"></div></div>
+                </div>
+                <div class="stat-block" id="stat-stamina">
+                    <div class="stat-label">STAMINA</div>
+                    <div class="stat-bar-bg"><div class="stat-bar" id="stamina-bar" style="background:#27ae60;"></div></div>
+                </div>
+                <div class="stat-block" id="stat-battery">
+                    <div class="stat-label">BATTERY</div>
+                    <div class="stat-bar-bg"><div class="stat-bar" id="battery-bar" style="background:#f39c12;"></div></div>
+                </div>
+                <div id="sanity-text"></div>
+            </div>
+
+            <!-- Top Center: Objective + Arrow -->
+            <div id="hud-topcenter">
+                <div id="direction-arrow">▲</div>
+                <div id="objective-text">Find the First Key</div>
+                <div id="timer-text"></div>
+            </div>
+
+            <!-- Top Right: Minimap -->
+            <div id="hud-topright">
+                <canvas id="minimap" width="160" height="160"></canvas>
+                <div id="danger-icon" class="hidden">⚠ DANGER</div>
+            </div>
+
+            <!-- Crosshair -->
+            <div id="crosshair"></div>
+
+            <!-- Bottom Center: Interaction -->
+            <div id="interaction-prompt" class="hidden"></div>
+
+            <!-- Crouching indicator -->
+            <div id="crouch-indicator" class="hidden">CROUCHING</div>
+
+            <!-- Hiding indicator -->
+            <div id="hiding-indicator" class="hidden">HIDING — Hold SPACE to hold breath</div>
+
+            <!-- Breath hold -->
+            <div id="breath-bar-container" class="hidden">
+                <div class="stat-label">BREATH</div>
+                <div class="stat-bar-bg"><div class="stat-bar" id="breath-bar" style="background:#3498db;"></div></div>
+            </div>
+        </div>
+
+        <!-- ================================================ -->
+        <!-- NOTE / PUZZLE READING OVERLAY                    -->
+        <!-- ================================================ -->
+        <div id="note-overlay" class="hidden">
+            <div id="note-paper">
+                <div id="note-title">NOTE</div>
+                <p id="note-body"></p>
+                <div class="note-hint">[ E ] — Close</div>
+            </div>
+        </div>
+
+        <!-- Switch Puzzle Overlay -->
+        <div id="puzzle-overlay" class="hidden">
+            <div id="puzzle-box">
+                <div id="puzzle-title">ELECTRICAL PANEL</div>
+                <div id="puzzle-desc">Arrange switches to restore power. Pattern on the wall.</div>
+                <div id="switch-grid"></div>
+                <div id="puzzle-feedback"></div>
+                <div class="note-hint">[ E ] — Exit Puzzle</div>
+            </div>
+        </div>
+
+        <!-- ================================================ -->
+        <!-- MENUS                                            -->
+        <!-- ================================================ -->
+
+        <!-- Main Menu -->
+        <div id="main-menu" class="menu-screen">
+            <div class="menu-inner">
+                <h1 id="title-text">THE CORRIDOR</h1>
+                <p id="best-time-display">Best Time: --</p>
+                <button id="btn-play">ENTER</button>
+                <button id="btn-settings">SETTINGS</button>
+                <button id="btn-fullscreen">FULLSCREEN</button>
+            </div>
+        </div>
+
+        <!-- Settings -->
+        <div id="settings-menu" class="menu-screen hidden">
+            <div class="menu-inner">
+                <h1>SETTINGS</h1>
+                <div class="setting-row">
+                    <label>Master Volume</label>
+                    <input type="range" id="vol-slider" min="0" max="1" step="0.05" value="0.5">
+                    <span id="vol-display">50%</span>
+                </div>
+                <div class="setting-row">
+                    <label>Mouse Sensitivity</label>
+                    <input type="range" id="sens-slider" min="0.001" max="0.008" step="0.0005" value="0.0025">
+                    <span id="sens-display">2.5</span>
+                </div>
+                <div class="setting-row">
+                    <label>FOV</label>
+                    <input type="range" id="fov-slider" min="0.5" max="0.85" step="0.05" value="0.66">
+                    <span id="fov-display">66°</span>
+                </div>
+                <button id="btn-settings-back">BACK</button>
+            </div>
+        </div>
+
+        <!-- Pause -->
+        <div id="pause-menu" class="menu-screen hidden">
+            <div class="menu-inner">
+                <h1>PAUSED</h1>
+                <button id="btn-resume">RESUME</button>
+                <button id="btn-settings-pause">SETTINGS</button>
+                <button id="btn-quit-pause">MAIN MENU</button>
+            </div>
+        </div>
+
+        <!-- Game Over -->
+        <div id="game-over-menu" class="menu-screen hidden">
+            <div class="menu-inner">
+                <h1 class="blood-title" id="death-title">SHE FOUND YOU</h1>
+                <p id="death-subtitle">You cannot escape the curse.</p>
+                <p id="death-time"></p>
+                <button id="btn-restart-death">TRY AGAIN</button>
+                <button id="btn-quit-death">MAIN MENU</button>
+            </div>
+        </div>
+
+        <!-- Victory -->
+        <div id="victory-menu" class="menu-screen hidden">
+            <div class="menu-inner" id="victory-inner">
+                <h1 class="victory-title">ESCAPED</h1>
+                <p id="victory-subtitle">You broke the curse of the corridor.</p>
+                <p id="victory-time"></p>
+                <p id="victory-record" class="hidden">⭐ NEW RECORD ⭐</p>
+                <button id="btn-play-again">PLAY AGAIN</button>
+                <button id="btn-quit-win">MAIN MENU</button>
+            </div>
+        </div>
+
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
