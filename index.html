@@ -21,6 +21,16 @@
         <!-- Vignette -->
         <div id="vignette"></div>
 
+        <!-- Moonlight ambient overlay (always on, very subtle) -->
+        <div id="moonlight-overlay"></div>
+
+        <!-- Key Collection Celebration -->
+        <div id="key-collect-popup" class="hidden">
+            <div id="key-collect-icon">🔑</div>
+            <div id="key-collect-text">KEY FOUND!</div>
+            <div id="key-collect-sub"></div>
+        </div>
+
         <!-- Breathing Overlay -->
         <div id="breathing-overlay"></div>
 
@@ -57,14 +67,30 @@
 
             <!-- Top Center: Objective + Arrow -->
             <div id="hud-topcenter">
-                <div id="direction-arrow">▲</div>
-                <div id="objective-text">Find the First Key</div>
+                <div id="nav-arrow-wrap">
+                    <div id="direction-arrow">▲</div>
+                </div>
+                <div id="objective-box">
+                    <div id="objective-label">OBJECTIVE</div>
+                    <div id="objective-text">Find the First Key</div>
+                    <div id="objective-distance"></div>
+                </div>
+                <div id="keys-collected-display">
+                    <span id="key-icon-1" class="key-dot">○</span>
+                    <span id="key-icon-2" class="key-dot">○</span>
+                    <span id="key-icon-3" class="key-dot">○</span>
+                </div>
                 <div id="timer-text"></div>
             </div>
 
-            <!-- Top Right: Minimap -->
+            <!-- Top Right: Minimap + zoom controls -->
             <div id="hud-topright">
                 <canvas id="minimap" width="160" height="160"></canvas>
+                <div id="minimap-zoom-btns">
+                    <button id="btn-zoom-in"  class="zoom-btn">+</button>
+                    <span id="zoom-label">1x</span>
+                    <button id="btn-zoom-out" class="zoom-btn">−</button>
+                </div>
                 <div id="danger-icon" class="hidden">⚠ DANGER</div>
             </div>
 
@@ -84,6 +110,13 @@
             <div id="breath-bar-container" class="hidden">
                 <div class="stat-label">BREATH</div>
                 <div class="stat-bar-bg"><div class="stat-bar" id="breath-bar" style="background:#3498db;"></div></div>
+            </div>
+
+            <!-- Ammo Display (bottom-right HUD, above gun) -->
+            <div id="ammo-display">
+                <div id="ammo-label">AMMO</div>
+                <div id="ammo-bullets"></div>
+                <div id="ammo-count">6 / 6</div>
             </div>
         </div>
 
@@ -107,7 +140,25 @@
                 <button class="touch-btn" id="tbtn-crouch">🦆<span>CROUCH</span></button>
                 <button class="touch-btn" id="tbtn-breath">🫁<span>BREATH</span></button>
                 <button class="touch-btn" id="tbtn-pause">⏸<span>PAUSE</span></button>
+                <button class="touch-btn" id="tbtn-shoot" style="background:rgba(180,30,30,0.5);border-color:rgba(255,60,60,0.5);">🔫<span>SHOOT</span></button>
             </div>
+        </div>
+
+        <!-- ================================================ -->
+        <!-- CUTSCENE OVERLAY (3rd key horror moment)         -->
+        <!-- ================================================ -->
+        <div id="cutscene-overlay" class="hidden">
+            <div id="cutscene-text-1"></div>
+            <div id="cutscene-ghost-flash"></div>
+        </div>
+
+        <!-- ================================================ -->
+        <!-- CINEMATIC ENDING OVERLAY                         -->
+        <!-- ================================================ -->
+        <div id="ending-overlay" class="hidden">
+            <div id="ending-flash"></div>
+            <div id="ending-sunlight"></div>
+            <div id="ending-fade"></div>
         </div>
 
         <!-- ================================================ -->
@@ -129,6 +180,19 @@
                 <div id="switch-grid"></div>
                 <div id="puzzle-feedback"></div>
                 <div class="note-hint">[ E ] or ✕ to exit</div>
+            </div>
+        </div>
+
+        <!-- ================================================ -->
+        <!-- STORY INTRO OVERLAY                              -->
+        <!-- ================================================ -->
+        <div id="intro-overlay" class="hidden">
+            <div id="intro-content">
+                <div id="intro-line-1" class="intro-line"></div>
+                <div id="intro-line-2" class="intro-line"></div>
+                <div id="intro-line-3" class="intro-line"></div>
+                <div id="intro-line-4" class="intro-line"></div>
+                <div id="intro-enter-hint">Press ENTER or tap to skip</div>
             </div>
         </div>
 

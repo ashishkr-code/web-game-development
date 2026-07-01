@@ -139,6 +139,7 @@ const ENT_TABLE    = 'table';
 const ENT_SWITCH   = 'switch';
 const ENT_DOOR     = 'door';
 const ENT_DUST     = 'dust';
+const ENT_AMMO     = 'ammo';
 
 // -----------------------------------------------------------------------
 // GAME STATE
@@ -173,6 +174,24 @@ let exitUnlocked    = false;
 let currentObj      = 'Find Key 1/3';
 let objTarget       = { x: 0, y: 0 }; // for direction arrow
 
+// Ghost activation (only after all 3 keys)
+let ghostActivated  = false;
+let ghostScaredTimer = 0;   // counts down when ghost is scared by gun
+
+// Gun / combat
+let ammo            = 6;
+const MAX_AMMO      = 6;
+let shotsFired      = 0;
+let gunRecoil       = 0;    // 0-1, drives recoil animation
+let gunBob          = 0;    // time counter for idle bob
+let muzzleFlashTimer = 0;   // counts down, shows muzzle flash when > 0
+
+// Key floating bob time
+let keyBobTime = 0;
+
+// Intro state
+let introComplete = false;
+
 // Explored map for minimap
 let exploredMap = Array.from({length: MAP_H}, () => new Uint8Array(MAP_W));
 
@@ -182,18 +201,21 @@ const kDown = {};
 // Ghost
 const ghost = {
     x: 28.5, y: 1.5,
-    state: 'PATROL', // PATROL | CHASE | SEARCH | IDLE
+    state: 'HIDDEN', // HIDDEN | PATROL | CHASE | SEARCH | SCARED
     speed: 2.0,
     targetX: 15, targetY: 15,
     lastHeardX: -1, lastHeardY: -1,
-    aggression: 1.0,  // increases as game progresses
+    aggression: 1.0,
     glitchTimer: 0,
-    visible: true,
+    visible: false,
     twitch: 0,
     patroltimer: 0,
     loseSightTimer: 0,
     attackCooldown: 0
 };
+
+// Minimap zoom
+let minimapZoom = 1; // 0.5 | 1 | 2
 
 // Entities list
 let entities = [];
@@ -480,6 +502,59 @@ function generateTextures() {
         }
         textures.switch = c;
     }
+
+    // ── AMMO BOX ───────────────────────────────────────────────────────
+    {
+        const [c, x] = makeTexCanvas();
+        x.clearRect(0,0,TEX_SIZE,TEX_SIZE);
+        x.fillStyle = '#4a3010'; x.fillRect(20,35,88,60);
+        x.strokeStyle = '#2a1a08'; x.lineWidth=2; x.strokeRect(20,35,88,60);
+        // Bullet icons
+        x.fillStyle = '#e0c030'; x.shadowColor='#ffd700'; x.shadowBlur=10;
+        for(let i=0;i<3;i++) {
+            x.fillRect(30+i*26, 42, 10, 28);
+            x.fillRect(30+i*26, 38, 10, 8);
+        }
+        x.shadowBlur=0;
+        // Label
+        x.fillStyle = '#cc0000'; x.font='bold 14px Courier New';
+        x.fillText('AMMO', 30, 110);
+        textures.ammo = c;
+    }
+
+    // ── GUN (FPS pistol silhouette) ────────────────────────────────────
+    {
+        const [c, x] = makeTexCanvas();
+        x.clearRect(0,0,TEX_SIZE,TEX_SIZE);
+        // Slide/barrel
+        x.fillStyle = '#2a2a2a';
+        x.fillRect(10, 25, 80, 28);
+        // Barrel tip
+        x.fillStyle = '#1a1a1a';
+        x.fillRect(85, 30, 20, 12);
+        // Ejection port highlight
+        x.fillStyle = '#444';
+        x.fillRect(50, 26, 30, 5);
+        // Grip
+        x.fillStyle = '#1a1a1a';
+        x.fillRect(25, 53, 30, 55);
+        // Grip texture lines
+        x.fillStyle = '#111';
+        for(let i=0;i<6;i++) x.fillRect(27, 58+i*8, 26, 2);
+        // Trigger guard
+        x.fillStyle = '#222';
+        x.strokeStyle = '#333'; x.lineWidth=3;
+        x.beginPath();
+        x.moveTo(42,53); x.lineTo(42,75); x.lineTo(60,75); x.lineTo(60,53);
+        x.stroke();
+        // Front sight
+        x.fillStyle = '#555';
+        x.fillRect(88, 22, 4, 8);
+        // Metal shine
+        x.fillStyle = 'rgba(255,255,255,0.08)';
+        x.fillRect(10, 25, 80, 4);
+        textures.gun = c;
+    }
 }
 generateTextures();
 
@@ -510,6 +585,11 @@ function initEntities() {
     entities.push({type:ENT_BATTERY, x:21.5, y:21.5});
     entities.push({type:ENT_BATTERY, x:15.5, y:5.5});
     entities.push({type:ENT_BATTERY, x:5.5,  y:25.5});
+    // Ammo pickups (restores 3 ammo each)
+    entities.push({type:ENT_AMMO, x:13.5, y:3.5});
+    entities.push({type:ENT_AMMO, x:7.5,  y:23.5});
+    entities.push({type:ENT_AMMO, x:25.5, y:19.5});
+    entities.push({type:ENT_AMMO, x:19.5, y:13.5});
     // Notes
     loreNotes.forEach(n => entities.push({type:ENT_NOTE, x:n.x, y:n.y, title:n.title, msg:n.msg}));
     // Switch Puzzle (power restoration)
@@ -740,6 +820,9 @@ function bfsNextStep(sx, sy, tx, ty) {
 // RAYCASTER ENGINE
 // -----------------------------------------------------------------------
 function render(delta) {
+    // Moonlight ambient constants — declared here so both floor and wall sections can use them
+    const moonlightR = 8, moonlightG = 12, moonlightB = 28;
+
     // Floor & ceiling casting (textured)
     const halfH = RH/2;
     const rowDir_left_x  = player.dirX - player.planeX;
@@ -764,8 +847,10 @@ function render(delta) {
         let floorX = player.x + rowDist * rowDir_left_x;
         let floorY = player.y + rowDist * rowDir_left_y;
 
-        const fog = Math.min(1, rowDist / 6);
-        const brightness = Math.max(0, 1 - fog) * (flashlightBrightness());
+        // rowDist fog: minimum 0.2 so floor/ceiling are never fully black
+        const fog = Math.min(1, rowDist / 8);
+        // ambient floor: 0.22 minimum (moonlight on floor)
+        const brightness = Math.max(0.22, 1 - fog) * flashlightBrightness();
 
         for(let x = 0; x < RW; x++) {
             const tx = ((floorX * TEX_SIZE) & (TEX_SIZE-1));
@@ -773,18 +858,19 @@ function render(delta) {
             const tidx = ((ty|0)*TEX_SIZE + (tx|0))*4;
 
             const src = isFloor ? floorPixels : ceilPixels;
-            const r = (src[tidx]   * brightness) | 0;
-            const g = (src[tidx+1] * brightness) | 0;
-            const b = (src[tidx+2] * brightness) | 0;
+            // floor: moonlight blue tint always added
+            const r = Math.min(255, (src[tidx]   * brightness)|0 + moonlightR);
+            const g = Math.min(255, (src[tidx+1] * brightness)|0 + moonlightG);
+            const b = Math.min(255, (src[tidx+2] * brightness)|0 + moonlightB + 8);
 
             const pidx = (y * RW + x) * 4;
             data[pidx]   = r; data[pidx+1] = g; data[pidx+2] = b; data[pidx+3] = 255;
 
-            // Mirror for ceiling
+            // Mirror for ceiling (slightly dimmer, more blue-tinted)
             const cpidx = ((RH-1-y) * RW + x) * 4;
-            const cr = (ceilPixels[tidx] * brightness * 0.4) | 0;
-            const cg = (ceilPixels[tidx+1] * brightness * 0.4) | 0;
-            const cb = (ceilPixels[tidx+2] * brightness * 0.4) | 0;
+            const cr = Math.min(255, (ceilPixels[tidx] * brightness * 0.55)|0 + moonlightR);
+            const cg = Math.min(255, (ceilPixels[tidx+1] * brightness * 0.55)|0 + moonlightG);
+            const cb = Math.min(255, (ceilPixels[tidx+2] * brightness * 0.55)|0 + moonlightB + 12);
             data[cpidx]   = cr; data[cpidx+1] = cg; data[cpidx+2] = cb; data[cpidx+3] = 255;
 
             floorX += floorStepX; floorY += floorStepY;
@@ -802,8 +888,10 @@ function render(delta) {
     const doorPixels     = textures.door.getContext('2d').getImageData(0,0,TEX_SIZE,TEX_SIZE).data;
     const woodPixels     = textures.wood.getContext('2d').getImageData(0,0,TEX_SIZE,TEX_SIZE).data;
 
-    const maxDist = flashlightOn() ? 9.5 : 2.8;
+    // Wider flashlight radius: flashlight on = 14 tiles, off = 5.5
+    const maxDist = flashlightOn() ? 14.0 : 5.5;
     const flickerMod = getFlickerMod();
+    // (moonlightR/G/B already declared at top of render())
 
     for(let x = 0; x < RW; x++) {
         const camX = 2 * x / RW - 1;
@@ -848,12 +936,13 @@ function render(delta) {
         if(hitVal === 4) srcPix = bloodPixels;
         if(hitVal === 2) srcPix = doorPixels;
 
-        // Flashlight cone (brighter in center of screen)
-        const coneFactor = 1 - Math.abs(camX) * 0.7;
+        // Flashlight cone — wider (0.4 instead of 0.7) so edges aren't pitch black
+        const coneFactor = 1 - Math.abs(camX) * 0.4;
         const dist = perpDist;
         const fogAmount = Math.min(1, dist / maxDist);
-        const baseBright = Math.max(0, (1-fogAmount) * flickerMod * coneFactor);
-        const sideDim = side===1 ? 0.65 : 1.0;
+        // baseBright never goes below 0.15 (moonlight floor)
+        const baseBright = Math.max(0.15, (1-fogAmount) * flickerMod * coneFactor);
+        const sideDim = side===1 ? 0.75 : 1.0; // lighter side-dim for visibility
         const brightness = baseBright * sideDim;
 
         const texStep = TEX_SIZE / lineH;
@@ -863,9 +952,10 @@ function render(delta) {
             const ty = Math.min(TEX_SIZE-1, (texPos)|0);
             texPos += texStep;
             const tidx = (ty * TEX_SIZE + texCol) * 4;
-            const r = (srcPix[tidx]   * brightness)|0;
-            const g = (srcPix[tidx+1] * brightness)|0;
-            const b = (srcPix[tidx+2] * brightness)|0;
+            // Texture colour + moonlight ambient additive
+            const r = Math.min(255, (srcPix[tidx]   * brightness)|0 + moonlightR);
+            const g = Math.min(255, (srcPix[tidx+1] * brightness)|0 + moonlightG);
+            const b = Math.min(255, (srcPix[tidx+2] * brightness)|0 + moonlightB);
             const pidx = (y * RW + x) * 4;
             wd[pidx]  =r; wd[pidx+1]=g; wd[pidx+2]=b; wd[pidx+3]=255;
         }
@@ -896,9 +986,12 @@ function render(delta) {
         if(tY <= 0.1) continue;
 
         const screenX = ((RW/2)*(1+tX/tY))|0;
+        // Key floating bob: offset sprite vertically
+        const isKey = (e.type === ENT_KEY);
+        const bobYOffset = isKey ? Math.sin(keyBobTime * 2.5) * (RH * 0.025) : 0;
         const sprH = Math.abs((RH/tY))|0;
-        const dsy = Math.max(0,(-sprH/2+RH/2)|0);
-        const dey = Math.min(RH-1,(sprH/2+RH/2)|0);
+        const dsy = Math.max(0,(-sprH/2+RH/2 + bobYOffset)|0);
+        const dey = Math.min(RH-1,(sprH/2+RH/2 + bobYOffset)|0);
         const sprW = sprH;
         const dsx = Math.max(0,(-sprW/2+screenX)|0);
         const dex = Math.min(RW-1,(sprW/2+screenX)|0);
@@ -936,6 +1029,26 @@ function render(delta) {
     }
     ctx.putImageData(wallData,0,0);
 
+    // Key beacon glow: draw a radial gradient at each visible key's screen position
+    for(const e of visEnts) {
+        if(e.type !== ENT_KEY) continue;
+        const spX = e.x - player.x, spY = e.y - player.y;
+        const tX = invDet*(player.dirY*spX - player.dirX*spY);
+        const tY = invDet*(-player.planeY*spX + player.planeX*spY);
+        if(tY <= 0.1 || tY >= maxDist * 1.5) continue;
+        const sx = ((RW/2)*(1+tX/tY))|0;
+        const sy = (RH/2)|0;
+        const glowR = Math.max(8, 60 / tY);
+        const pulse = 0.5 + 0.5 * Math.sin(keyBobTime * 3);
+        const alpha = Math.min(0.7, (1 - tY/maxDist) * 0.6 + pulse * 0.2);
+        const grd = ctx.createRadialGradient(sx, sy, 0, sx, sy, glowR * 2.5);
+        grd.addColorStop(0,   `rgba(255,220,0,${alpha})`);
+        grd.addColorStop(0.5, `rgba(255,180,0,${alpha * 0.4})`);
+        grd.addColorStop(1,   'rgba(255,150,0,0)');
+        ctx.fillStyle = grd;
+        ctx.fillRect(sx - glowR*2.5, sy - glowR*2.5, glowR*5, glowR*5);
+    }
+
     // Dust particles
     renderDust();
 }
@@ -951,14 +1064,17 @@ function flashlightOn() {
 }
 
 function flashlightBrightness() {
-    if(player.battery <= 0) return 0.04;
+    // MINIMUM 0.25 ambient — game is never pitch black
+    const AMBIENT_MIN = 0.25;
+    if(player.battery <= 0) return AMBIENT_MIN;
     const base = Math.min(1, player.battery/100);
-    return base * flickerValue;
+    return Math.max(AMBIENT_MIN, base * flickerValue);
 }
 
 function getFlickerMod() {
-    if(player.battery <= 0) return 0.04;
-    return flickerValue * Math.min(1, player.battery / 100);
+    const AMBIENT_MIN = 0.25;
+    if(player.battery <= 0) return AMBIENT_MIN;
+    return Math.max(AMBIENT_MIN, flickerValue * Math.min(1, player.battery / 100));
 }
 
 function updateFlicker(delta) {
@@ -1002,44 +1118,89 @@ function updateDust(delta) {
 // MINIMAP
 // -----------------------------------------------------------------------
 function drawMinimap() {
-    mCtx.clearRect(0,0,160,160);
-    const cellSize = 160 / MAP_W;
+    const MW = minimapCanvas.width;
+    const MH = minimapCanvas.height;
+    mCtx.clearRect(0,0,MW,MH);
+
+    // Zoom: cellSize determines how many tiles are visible
+    const tilesVisible = MAP_W / minimapZoom;
+    const cellSize = MW / tilesVisible;
+
+    // Center the view on the player
+    const camX = player.x - tilesVisible/2;
+    const camY = player.y - tilesVisible/2;
 
     for(let y=0;y<MAP_H;y++) {
         for(let x=0;x<MAP_W;x++) {
             if(!exploredMap[y][x]) continue;
             const v = WORLD_MAP[y][x];
+            const sx = (x - camX) * cellSize;
+            const sy = (y - camY) * cellSize;
+            if(sx < -cellSize || sy < -cellSize || sx > MW || sy > MH) continue;
             if(v===1)      mCtx.fillStyle='#3a3a3a';
             else if(v===2) mCtx.fillStyle= exitUnlocked ? '#00ff66' : '#aa2222';
             else           mCtx.fillStyle='#888';
-            mCtx.fillRect(x*cellSize, y*cellSize, cellSize, cellSize);
+            mCtx.fillRect(sx, sy, cellSize+0.5, cellSize+0.5);
         }
     }
 
     // Entities on map if explored
     entities.forEach(e => {
-        if(!exploredMap[e.y|0][e.x|0]) return;
-        if(e.type===ENT_KEY)     mCtx.fillStyle='#ffdd00';
-        else if(e.type===ENT_BATTERY) mCtx.fillStyle='#00ff44';
-        else return;
-        mCtx.fillRect(e.x*cellSize-cellSize/2, e.y*cellSize-cellSize/2, cellSize, cellSize);
+        if(!exploredMap[e.y|0] || !exploredMap[e.y|0][e.x|0]) return;
+        const sx = (e.x - camX) * cellSize;
+        const sy = (e.y - camY) * cellSize;
+        if(e.type===ENT_KEY) {
+            // Key: yellow circle
+            mCtx.fillStyle='#ffdd00';
+            mCtx.beginPath(); mCtx.arc(sx, sy, cellSize*0.9, 0, Math.PI*2); mCtx.fill();
+            mCtx.fillStyle='#000'; mCtx.font=`bold ${Math.max(6,cellSize*1.2)}px sans-serif`;
+            mCtx.textAlign='center'; mCtx.textBaseline='middle';
+            mCtx.fillText('🔑', sx, sy+1);
+        } else if(e.type===ENT_AMMO) {
+            mCtx.fillStyle='rgba(255,120,0,0.8)';
+            mCtx.fillRect(sx-cellSize/2, sy-cellSize/2, cellSize, cellSize);
+        } else if(e.type===ENT_BATTERY) {
+            mCtx.fillStyle='#00ff44';
+            mCtx.fillRect(sx-cellSize/2, sy-cellSize/2, cellSize, cellSize);
+        }
     });
 
-    // Player
-    const px = player.x * cellSize, py = player.y * cellSize;
-    mCtx.fillStyle='#ffffff';
-    mCtx.beginPath(); mCtx.arc(px, py, cellSize, 0, Math.PI*2); mCtx.fill();
+    // Exit door (only after all keys collected)
+    if(exitUnlocked) {
+        const sx = (28.5 - camX) * cellSize;
+        const sy = (28.5 - camY) * cellSize;
+        mCtx.fillStyle='#33ff88';
+        mCtx.font=`bold ${Math.max(8,cellSize*1.4)}px sans-serif`;
+        mCtx.textAlign='center'; mCtx.textBaseline='middle';
+        mCtx.fillText('🚪', sx, sy);
+    }
 
-    // Direction arrow
-    mCtx.strokeStyle='#ffffff'; mCtx.lineWidth=1;
+    // Player
+    const px = (player.x - camX) * cellSize;
+    const py = (player.y - camY) * cellSize;
+    mCtx.fillStyle='#ffffff';
+    mCtx.beginPath(); mCtx.arc(px, py, Math.max(3, cellSize*0.9), 0, Math.PI*2); mCtx.fill();
+
+    // Direction triangle
+    const dl = cellSize * 2.5;
+    const angle = Math.atan2(player.dirY, player.dirX);
+    mCtx.strokeStyle='#ffffff'; mCtx.lineWidth=1.5;
     mCtx.beginPath();
     mCtx.moveTo(px, py);
-    mCtx.lineTo(px + player.dirX*cellSize*3, py + player.dirY*cellSize*3);
+    mCtx.lineTo(px + Math.cos(angle)*dl, py + Math.sin(angle)*dl);
     mCtx.stroke();
 
-    // Ghost flashing if close
+    // Ghost (pulsing red dot — only when activated and nearby)
+    if(ghostActivated && ghost.visible) {
+        const gsx = (ghost.x - camX) * cellSize;
+        const gsy = (ghost.y - camY) * cellSize;
+        const pulse = 0.5 + 0.5 * Math.sin(playTime * 8);
+        mCtx.fillStyle = `rgba(255,0,0,${0.6 + pulse*0.4})`;
+        mCtx.beginPath(); mCtx.arc(gsx, gsy, Math.max(3, cellSize*1.2), 0, Math.PI*2); mCtx.fill();
+    }
+
     const ghostDist = distToGhost();
-    if(ghostDist < 8) {
+    if(ghostDist < 8 && ghostActivated) {
         dangerIcon.classList.remove('hidden');
     } else {
         dangerIcon.classList.add('hidden');
@@ -1053,14 +1214,30 @@ function updateDirectionArrow() {
     let tx = objTarget.x, ty = objTarget.y;
     const dx = tx - player.x, dy = ty - player.y;
     const angle = Math.atan2(dy, dx);
-    // Convert world angle to player-relative angle
     const playerAngle = Math.atan2(player.dirY, player.dirX);
     const relAngle = angle - playerAngle;
-    // CSS rotate of the arrow element
-    dirArrow.style.transform = `rotate(${(relAngle * 180/Math.PI + 90).toFixed(1)}deg)`;
+    // Smooth rotation via CSS transform
+    const deg = (relAngle * 180/Math.PI + 90).toFixed(1);
+    dirArrow.style.transform = `rotate(${deg}deg)`;
+
+    // Update key dots in HUD
+    for(let i = 1; i <= 3; i++) {
+        const dot = document.getElementById(`key-icon-${i}`);
+        if(!dot) continue;
+        if(i <= keysCollected) {
+            dot.classList.add('collected');
+            dot.textContent = '🔑';
+        } else {
+            dot.classList.remove('collected');
+            dot.textContent = '○';
+        }
+    }
 }
 
 function setObjectiveTarget() {
+    let objStr = '';
+    let distStr = '';
+
     if(!powerRestored) {
         // Point to nearest key first
         let nearestKey = null, nearestDist = Infinity;
@@ -1072,18 +1249,30 @@ function setObjectiveTarget() {
         });
         if(nearestKey) {
             objTarget = {x:nearestKey.x, y:nearestKey.y};
-            currentObj = `Find Key ${keysCollected+1}/${TOTAL_KEYS}`;
+            const dist = Math.sqrt(nearestDist).toFixed(0);
+            objStr  = `Find Key ${keysCollected+1} of 3`;
+            distStr = `${dist} meters away`;
         }
         if(keysCollected >= TOTAL_KEYS) {
             // Point to switch
             const sw = entities.find(e=>e.type===ENT_SWITCH);
-            if(sw) { objTarget={x:sw.x,y:sw.y}; currentObj='Restore Power'; }
+            if(sw) {
+                objTarget={x:sw.x,y:sw.y};
+                const dist = Math.sqrt((sw.x-player.x)**2+(sw.y-player.y)**2).toFixed(0);
+                objStr  = 'Restore Power';
+                distStr = `${dist} meters away`;
+            }
         }
     } else {
         objTarget = {x:28.5, y:28.5};
-        currentObj = 'Escape!';
+        const dist = Math.sqrt((28.5-player.x)**2+(28.5-player.y)**2).toFixed(0);
+        objStr  = 'ESCAPE!';
+        distStr = `${dist} meters to exit`;
     }
-    objText.innerText = currentObj;
+
+    objText.innerText = objStr;
+    const distEl = document.getElementById('objective-distance');
+    if(distEl) distEl.innerText = distStr;
 }
 
 // -----------------------------------------------------------------------
@@ -1202,11 +1391,25 @@ function doInteract() {
         playPickup();
         flashEffect('rgba(255,215,0,0.3)', 200);
         interactionPrompt.classList.add('hidden');
+        showKeyCollectCelebration(keysCollected);
+        // ★ TRIGGER CUTSCENE ON 3rd KEY ★
+        if(keysCollected >= TOTAL_KEYS) {
+            setTimeout(() => playCutscene(), 300);
+        }
     }
     else if(e.type===ENT_BATTERY) {
         player.battery = Math.min(100, player.battery + 45);
         const idx=entities.indexOf(e); if(idx>-1) entities.splice(idx,1);
         playPickup();
+        showTempMessage('Battery recharged.');
+    }
+    else if(e.type===ENT_AMMO) {
+        const gained = Math.min(MAX_AMMO - ammo, 3);
+        ammo = Math.min(MAX_AMMO, ammo + 3);
+        const idx=entities.indexOf(e); if(idx>-1) entities.splice(idx,1);
+        playPickup();
+        showTempMessage(`+3 Ammo  (${ammo}/${MAX_AMMO})`);
+        updateAmmoDisplay();
     }
     else if(e.type===ENT_NOTE) {
         noteTitle.innerText = e.title || 'NOTE';
@@ -1226,7 +1429,7 @@ function doInteract() {
         enterHiding();
     }
     else if(e.type==='EXIT') {
-        if(exitUnlocked) winGame();
+        if(exitUnlocked) playCinematicEnding();
         else showTempMessage('Not yet. Restore the power first.');
     }
 }
@@ -1327,18 +1530,40 @@ const GHOST_PATH_INTERVAL = 1.2;
 
 function updateGhost(delta) {
     ghost.attackCooldown = Math.max(0, ghost.attackCooldown - delta);
-    ghost.aggression = Math.min(2.5, 1.0 + playTime / 180); // Gets faster over 3 min
+    ghost.aggression = Math.min(2.8, 1.0 + playTime / 160);
+
+    // ── HIDDEN: ghost exists but is invisible and never attacks ──────────
+    if(ghost.state === 'HIDDEN') {
+        ghost.visible = false;
+        return;
+    }
+
+    // ── SCARED: gun hit — ghost is temporarily banished ──────────────────
+    if(ghost.state === 'SCARED') {
+        ghost.visible = false;
+        ghostScaredTimer -= delta;
+        if(ghostScaredTimer <= 0) {
+            // Ghost returns — teleport far from player, start chasing again
+            ghost.x = player.x + (Math.random() < 0.5 ? -12 : 12);
+            ghost.y = player.y + (Math.random() < 0.5 ? -12 : 12);
+            ghost.x = Math.max(1.5, Math.min(MAP_W-1.5, ghost.x));
+            ghost.y = Math.max(1.5, Math.min(MAP_H-1.5, ghost.y));
+            if(isWall(ghost.x|0, ghost.y|0)) { ghost.x=15.5; ghost.y=15.5; }
+            ghost.state = 'CHASE';
+            ghost.visible = true;
+            flashEffect('rgba(180,0,0,0.3)', 400);
+            playScream();
+        }
+        return;
+    }
 
     const dist = distToGhost();
     const playerVisible = dist < (flashlightOn() ? 10 : 4);
 
-    // State transitions
-    if(dist < 2 && !player.isHiding) {
-        // Attack
-        if(ghost.attackCooldown <= 0) {
-            ghostAttack();
-            ghost.attackCooldown = 8;
-        }
+    // Attack only if ghost is not scared and has been activated
+    if(dist < 2 && !player.isHiding && ghost.attackCooldown <= 0) {
+        ghostAttack();
+        ghost.attackCooldown = 8;
     }
 
     if(player.noiseLevel > 0 && dist < (player.noiseLevel*5)) {
@@ -1356,8 +1581,10 @@ function updateGhost(delta) {
         }
     }
 
-    // Update ghost speed
-    ghost.speed = ghost.aggression * (ghost.state==='CHASE' ? 3.8 : (ghost.state==='SEARCH'?2.0:1.5));
+    // Speed scales with proximity to exit (final push pressure)
+    const exitDist = Math.sqrt((player.x-28.5)**2+(player.y-28.5)**2);
+    const exitBoost = exitUnlocked ? Math.max(1.0, 3.0 - exitDist*0.15) : 1.0;
+    ghost.speed = ghost.aggression * exitBoost * (ghost.state==='CHASE' ? 3.8 : (ghost.state==='SEARCH'?2.0:1.5));
 
     // Random teleport
     if(ghost.state!=='CHASE' && Math.random() < 0.001 && dist > 10) {
@@ -1434,8 +1661,99 @@ function ghostAttack() {
 }
 
 // -----------------------------------------------------------------------
-// SANITY
+// KEY COLLECTION CELEBRATION
 // -----------------------------------------------------------------------
+function showKeyCollectCelebration(keyNum) {
+    const popup = document.getElementById('key-collect-popup');
+    const sub   = document.getElementById('key-collect-sub');
+    if(!popup) return;
+    const remaining = TOTAL_KEYS - keyNum;
+    sub.innerText = remaining > 0
+        ? `${remaining} key${remaining>1?'s':''} remaining`
+        : 'All keys collected! Find the power generator.';
+    popup.classList.remove('hidden');
+    // Re-trigger animation
+    popup.style.animation = 'none'; popup.offsetHeight;
+    popup.style.animation = 'keyPopIn 0.4s cubic-bezier(0.34,1.56,0.64,1) forwards';
+    setTimeout(() => {
+        popup.style.opacity = '0';
+        popup.style.transition = 'opacity 0.8s';
+        setTimeout(() => {
+            popup.classList.add('hidden');
+            popup.style.opacity = '';
+            popup.style.transition = '';
+        }, 800);
+    }, 2500);
+}
+
+// -----------------------------------------------------------------------
+// STORY INTRO SEQUENCE
+// -----------------------------------------------------------------------
+const INTRO_LINES = [
+    'You wake inside an abandoned corridor.',
+    'Three keys are hidden somewhere in the dark.',
+    'Something is watching you from the shadows.',
+    'Escape before it finds you.'
+];
+
+function runIntroSequence(onComplete = () => {}) {
+    const overlay = document.getElementById('intro-overlay');
+    const hint    = document.getElementById('intro-enter-hint');
+    const lines   = INTRO_LINES.map((_, i) => document.getElementById(`intro-line-${i+1}`));
+    if(!overlay) { if(typeof onComplete === 'function') onComplete(); return; }
+
+    overlay.style.display = 'flex';
+    overlay.style.opacity = '1';
+    lines.forEach(l => { if(l) { l.innerText=''; l.style.opacity='0'; l.style.animation='none'; } });
+    if(hint) hint.style.opacity = '0';
+
+    let done = false;
+    const finish = () => {
+        if(done) return; done = true;
+        overlay.style.transition = 'opacity 0.8s';
+        overlay.style.opacity = '0';
+        setTimeout(() => {
+            overlay.style.display = 'none';
+            if(typeof onComplete === 'function') onComplete();
+        }, 800);
+    };
+
+    // Reveal lines one by one
+    const delays = [400, 2000, 3800, 5600];
+    INTRO_LINES.forEach((text, i) => {
+        setTimeout(() => {
+            if(done) return;
+            const el = lines[i];
+            if(!el) return;
+            el.innerText = text;
+            el.style.animation = 'introLineReveal 0.9s ease forwards';
+        }, delays[i]);
+    });
+
+    // Show hint after all lines
+    setTimeout(() => {
+        if(done) return;
+        if(hint) hint.style.opacity = '1';
+    }, 7200);
+
+    // Allow skip with ENTER, SPACE, ESCAPE, tap, or mouse click
+    const skipHandler = () => { finish(); };
+    const keyHandler = (e) => {
+        if(e.key === 'Enter' || e.key === ' ' || e.key === 'Escape') {
+            document.removeEventListener('keydown', keyHandler);
+            overlay.removeEventListener('touchstart', skipHandler);
+            overlay.removeEventListener('mousedown', skipHandler);
+            overlay.removeEventListener('click', skipHandler);
+            finish();
+        }
+    };
+    document.addEventListener('keydown', keyHandler);
+    overlay.addEventListener('touchstart', skipHandler);
+    overlay.addEventListener('mousedown', skipHandler);
+    overlay.addEventListener('click', skipHandler);
+    // Auto-complete after 10s
+    setTimeout(finish, 10000);
+}
 function updateSanity(delta) {
     const dist = distToGhost();
     if(!flashlightOn()) sanity = Math.max(0, sanity - 5*delta);
@@ -1484,15 +1802,168 @@ function triggerRandomHorrorEvent() {
         ()=>{ showStatic(1.2); playStaticSFX(); },
         // Random scream from far
         ()=>{ playScream(); },
-        // Fake ghost appear
+        // Fake ghost appear (only when not activated, to create pre-activation dread)
         ()=>{
-            const wasVis=ghost.visible;
-            ghost.visible=true; ghost.glitchTimer=0;
-            setTimeout(()=>{ ghost.glitchTimer=1.0; ghost.visible=wasVis; },300);
+            if(!ghostActivated) {
+                const wasVis=ghost.visible;
+                ghost.visible=true; ghost.glitchTimer=0;
+                setTimeout(()=>{ ghost.glitchTimer=1.0; ghost.visible=wasVis; },250);
+            }
         },
     ];
     const ev=events[(Math.random()*events.length)|0];
     ev();
+}
+
+// -----------------------------------------------------------------------
+// CUTSCENE: 3rd KEY COLLECTED
+// -----------------------------------------------------------------------
+function playCutscene() {
+    gameState = 'CUTSCENE';
+    releaseLock();
+    if(isMobile) document.getElementById('touch-controls').classList.add('hidden');
+
+    const overlay = document.getElementById('cutscene-overlay');
+    const txt1    = document.getElementById('cutscene-text-1');
+    const gflash  = document.getElementById('cutscene-ghost-flash');
+    overlay.classList.remove('hidden');
+
+    // Step 1: darkness + text
+    txt1.innerText = 'She felt it.';
+    txt1.style.animation = 'none'; txt1.offsetHeight; // reflow
+    txt1.style.animation = 'cutsceneTextIn 0.8s ease forwards';
+
+    setTimeout(() => {
+        txt1.innerText = 'You took all three.';
+        txt1.style.animation = 'none'; txt1.offsetHeight;
+        txt1.style.animation = 'cutsceneTextIn 0.8s ease forwards';
+    }, 1500);
+
+    setTimeout(() => {
+        txt1.innerText = 'Now she is coming for you.';
+        txt1.style.animation = 'none'; txt1.offsetHeight;
+        txt1.style.animation = 'cutsceneTextIn 0.8s ease forwards';
+        // Show ghost flash
+        gflash.style.display = 'block';
+        playScream();
+        document.body.classList.add('shake-heavy');
+        setTimeout(() => document.body.classList.remove('shake-heavy'), 400);
+    }, 3000);
+
+    setTimeout(() => {
+        // End cutscene — activate ghost
+        overlay.classList.add('hidden');
+        gflash.style.display = 'none';
+        ghostActivated = true;
+        ghost.state = 'CHASE';
+        ghost.visible = true;
+        // Teleport ghost near player for immediate tension
+        ghost.x = player.x + (Math.random() < 0.5 ? -8 : 8);
+        ghost.y = player.y + (Math.random() < 0.5 ? -8 : 8);
+        ghost.x = Math.max(1.5, Math.min(MAP_W-1.5, ghost.x));
+        ghost.y = Math.max(1.5, Math.min(MAP_H-1.5, ghost.y));
+        if(isWall(ghost.x|0, ghost.y|0)) { ghost.x=25.5; ghost.y=5.5; }
+        flashEffect('rgba(180,0,0,0.5)', 500);
+        gameState = 'PLAYING';
+        if(!isMobile) requestLock();
+        else document.getElementById('touch-controls').classList.remove('hidden');
+        lastTime = performance.now();
+        requestAnimationFrame(isMobile ? mobileGameLoop : gameLoop);
+    }, 5000);
+}
+
+// -----------------------------------------------------------------------
+// GUN SYSTEM
+// -----------------------------------------------------------------------
+function updateAmmoDisplay() {
+    const bulletsEl = document.getElementById('ammo-bullets');
+    const countEl   = document.getElementById('ammo-count');
+    bulletsEl.innerHTML = '';
+    for(let i = 0; i < MAX_AMMO; i++) {
+        const b = document.createElement('div');
+        b.className = 'bullet-icon' + (i >= ammo ? ' spent' : '');
+        bulletsEl.appendChild(b);
+    }
+    countEl.innerText = ammo + ' / ' + MAX_AMMO;
+}
+
+function updateGun(delta) {
+    gunBob += delta;
+    gunRecoil = Math.max(0, gunRecoil - delta * 8); // recoil eases out at 8x speed
+    muzzleFlashTimer = Math.max(0, muzzleFlashTimer - delta);
+}
+
+function playGunshot() {
+    if(!audioCtx) return;
+    // Sharp click + noise burst = gunshot
+    playNoise(0.06, 1.0, 4000);
+    playTone(120, 'sawtooth', 0.15, 0.8);
+    setTimeout(() => playNoise(0.12, 0.5, 800), 60);
+}
+
+function drawGun() {
+    if(!textures.gun) return;
+    const gw = RW * 0.35;   // gun width on canvas
+    const gh = gw * (TEX_SIZE / TEX_SIZE); // keep square ratio
+    const bobOffset = Math.sin(gunBob * 2.2) * (RH * 0.015);
+    const recoilOffset = gunRecoil * RH * 0.12; // gun jumps up on recoil
+    const gx = RW - gw + RW * 0.02;            // right side
+    const gy = RH - gh + RH * 0.15 + bobOffset - recoilOffset;
+
+    ctx.globalAlpha = 0.92;
+    ctx.drawImage(textures.gun, gx, gy, gw, gh);
+    ctx.globalAlpha = 1.0;
+
+    // Muzzle flash at barrel tip
+    if(muzzleFlashTimer > 0) {
+        const fx = gx + gw * 0.95;  // barrel tip x
+        const fy = gy + gh * 0.27;  // barrel tip y
+        const fr = 18 + Math.random() * 10;
+        const grd = ctx.createRadialGradient(fx, fy, 0, fx, fy, fr);
+        grd.addColorStop(0, 'rgba(255,255,200,0.95)');
+        grd.addColorStop(0.4, 'rgba(255,160,0,0.8)');
+        grd.addColorStop(1,   'rgba(255,80,0,0)');
+        ctx.fillStyle = grd;
+        ctx.beginPath(); ctx.arc(fx, fy, fr, 0, Math.PI*2); ctx.fill();
+    }
+}
+
+function shootGun() {
+    if(ammo <= 0) {
+        // Empty click
+        if(audioCtx) playNoise(0.03, 0.3, 3000);
+        showTempMessage('Out of ammo! Find ammo boxes.');
+        return;
+    }
+    ammo--;
+    shotsFired++;
+    gunRecoil = 1.0;
+    muzzleFlashTimer = 0.07;
+    playGunshot();
+    updateAmmoDisplay();
+    document.body.classList.add('shake-light');
+    setTimeout(() => document.body.classList.remove('shake-light'), 150);
+
+    // Check if ghost is in FOV and within range
+    if(ghostActivated && ghost.visible && ghost.state !== 'SCARED') {
+        const dist = distToGhost();
+        // Compute angle between player direction and ghost direction
+        const dx = ghost.x - player.x, dy = ghost.y - player.y;
+        const ghostAngle = Math.atan2(dy, dx);
+        const playerAngle = Math.atan2(player.dirY, player.dirX);
+        let angleDiff = Math.abs(ghostAngle - playerAngle);
+        if(angleDiff > Math.PI) angleDiff = Math.PI*2 - angleDiff;
+
+        if(dist < 8 && angleDiff < 0.6) {
+            // Hit!
+            ghost.state = 'SCARED';
+            ghost.visible = false;
+            ghostScaredTimer = 10;
+            flashEffect('rgba(255,255,255,0.8)', 150);
+            playScream();
+            showTempMessage('Ghost scared away! 10 seconds...');
+        }
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -1540,13 +2011,21 @@ function startGame() {
     ghostPathTimer=0; horrorCooldown=12; nextHorrorIn=15;
     exploredMap = Array.from({length:MAP_H},()=>new Uint8Array(MAP_W));
 
-    ghost.x=1.5; ghost.y=1.5;
-    ghost.state='PATROL'; ghost.speed=2.0;
+    // Reset ghost — starts HIDDEN until 3 keys collected
+    ghost.x=28.5; ghost.y=1.5;
+    ghost.state='HIDDEN'; ghost.speed=2.0;
     ghost.targetX=15; ghost.targetY=15;
     ghost.lastHeardX=-1; ghost.lastHeardY=-1;
     ghost.aggression=1.0; ghost.glitchTimer=0;
-    ghost.visible=true; ghost.patroltimer=0;
+    ghost.visible=false; ghost.patroltimer=0;
     ghost.loseSightTimer=0; ghost.attackCooldown=0;
+
+    // Reset new systems
+    ghostActivated=false; ghostScaredTimer=0;
+    ammo=MAX_AMMO; shotsFired=0;
+    gunRecoil=0; gunBob=0; muzzleFlashTimer=0;
+    keyBobTime=0;
+    updateAmmoDisplay();
 
     initEntities(); initDust();
 
@@ -1554,6 +2033,8 @@ function startGame() {
     interactCooldown=0;
 
     [mainMenu,settingsMenu,pauseMenu,gameOverMenu,victoryMenu,noteOverlay,puzzleOverlay].forEach(m=>m.classList.add('hidden'));
+    document.getElementById('cutscene-overlay').classList.add('hidden');
+    document.getElementById('ending-overlay').classList.add('hidden');
     hudEl.classList.remove('hidden');
     interactionPrompt.classList.add('hidden');
 
@@ -1562,14 +2043,17 @@ function startGame() {
     breathingOverlay.style.animationIterationCount='infinite';
 
     setObjectiveTarget();
-    requestLock();
-    // Show touch controls on mobile
-    if(isMobile) {
-        document.getElementById('touch-controls').classList.remove('hidden');
-    }
+
+    // Start game immediately (no hang). Intro plays as non-blocking overlay on top.
     gameState='PLAYING';
     lastTime=performance.now();
-    requestAnimationFrame(gameLoop);
+    requestLock();
+    if(isMobile) { document.getElementById('touch-controls').classList.remove('hidden'); }
+    const loopFn = (isMobile && window.mobileGameLoop) ? window.mobileGameLoop : gameLoop;
+    requestAnimationFrame(loopFn);
+
+    // Story intro shown on top of running game — non-blocking
+    runIntroSequence();
 }
 
 function pauseGame() {
@@ -1604,6 +2088,7 @@ function winGame() {
     if(isMobile) document.getElementById('touch-controls').classList.add('hidden');
     hudEl.classList.add('hidden');
     document.getElementById('victory-time').innerText='Time: '+formatTime(playTime);
+    document.getElementById('victory-subtitle').innerText=`Keys: 3/3  ·  Shots fired: ${shotsFired}`;
     const prev=parseFloat(localStorage.getItem('corridor_best_v3')||'0');
     if(!prev || playTime<prev) {
         localStorage.setItem('corridor_best_v3', playTime);
@@ -1615,6 +2100,72 @@ function winGame() {
 }
 
 // -----------------------------------------------------------------------
+// CINEMATIC ENDING SEQUENCE
+// -----------------------------------------------------------------------
+function playCinematicEnding() {
+    gameState = 'ENDING';
+    releaseLock();
+    if(isMobile) document.getElementById('touch-controls').classList.add('hidden');
+
+    const endOverlay  = document.getElementById('ending-overlay');
+    const endFlash    = document.getElementById('ending-flash');
+    const endSunlight = document.getElementById('ending-sunlight');
+    const endFade     = document.getElementById('ending-fade');
+    endOverlay.classList.remove('hidden');
+    endFlash.style.opacity    = '0';
+    endSunlight.style.background = 'radial-gradient(ellipse at 50% 50%, rgba(255,240,180,0.0) 0%, transparent 100%)';
+    endFade.style.opacity     = '0';
+    endFade.style.transition  = 'none';
+    endFlash.style.transition = 'none';
+
+    // Step 1 (0s): Door slam + white flash from exit direction
+    playDoorSlam();
+    endFlash.style.opacity = '0.9';
+    setTimeout(() => { endFlash.style.transition='opacity 0.8s'; endFlash.style.opacity='0'; }, 100);
+
+    // Step 2 (1s): Ghost rushes — show ghost on screen + scream
+    setTimeout(() => {
+        ghost.visible = true;
+        ghost.state = 'CHASE';
+        ghost.x = player.x + player.dirX * 3;
+        ghost.y = player.y + player.dirY * 3;
+        document.body.classList.add('shake-heavy');
+        setTimeout(() => document.body.classList.remove('shake-heavy'), 400);
+    }, 1000);
+
+    // Step 3 (2s): Player auto-shoots — gun fires
+    setTimeout(() => {
+        gunRecoil = 1.0;
+        muzzleFlashTimer = 0.2;
+        playGunshot();
+        playScream();
+        // Mega white flash
+        endFlash.style.transition = 'none';
+        endFlash.style.opacity = '1';
+        setTimeout(() => { endFlash.style.transition='opacity 1.5s'; endFlash.style.opacity='0'; }, 80);
+        ghost.visible = false;
+        ghost.state = 'HIDDEN';
+    }, 2000);
+
+    // Step 4 (4s): Sunlight pours in
+    setTimeout(() => {
+        endSunlight.style.background = 'radial-gradient(ellipse at 50% 40%, rgba(255,240,180,0.85) 0%, rgba(255,200,80,0.3) 60%, transparent 100%)';
+    }, 4000);
+
+    // Step 5 (6.5s): Fade to black
+    setTimeout(() => {
+        endFade.style.transition = 'opacity 2.5s ease';
+        endFade.style.opacity = '1';
+    }, 6500);
+
+    // Step 6 (9s): Show victory screen
+    setTimeout(() => {
+        winGame();
+        endOverlay.classList.add('hidden');
+    }, 9000);
+}
+
+// -----------------------------------------------------------------------
 // MAIN GAME LOOP
 // -----------------------------------------------------------------------
 function gameLoop(timestamp) {
@@ -1622,6 +2173,7 @@ function gameLoop(timestamp) {
     const delta = Math.min((timestamp - lastTime)/1000, 0.05);
     lastTime = timestamp;
     playTime += delta;
+    keyBobTime += delta;
     interactCooldown = Math.max(0, interactCooldown - delta);
     tempMsgTimer = Math.max(0, tempMsgTimer - delta);
     if(tempMsgTimer<=0 && interactionPrompt.classList.contains('hidden')===false) {
@@ -1631,6 +2183,7 @@ function gameLoop(timestamp) {
     movePlayer(delta);
     updateHiding(delta);
     updateGhost(delta);
+    updateGun(delta);
     updateSanity(delta);
     updateFlicker(delta);
     updateDust(delta);
@@ -1641,12 +2194,13 @@ function gameLoop(timestamp) {
     const ent = getClosestInteractable();
     if(ent && tempMsgTimer<=0) {
         let prompt='';
-        if(ent.type===ENT_KEY)     prompt='[ E ]  Pick up Key';
+        if(ent.type===ENT_KEY)     prompt=`[ E ]  Pick up Key ${keysCollected+1}/3`;
         if(ent.type===ENT_BATTERY) prompt='[ E ]  Grab Battery';
+        if(ent.type===ENT_AMMO)    prompt='[ E ]  Pick up Ammo';
         if(ent.type===ENT_NOTE)    prompt='[ E ]  Read Note';
         if(ent.type===ENT_SWITCH)  prompt='[ E ]  Use Panel';
         if(ent.type===ENT_LOCKER)  prompt='[ E ]  Hide in Locker';
-        if(ent.type==='EXIT')      prompt= exitUnlocked?'[ E ]  ESCAPE!':'[ E ]  (Locked)';
+        if(ent.type==='EXIT')      prompt= exitUnlocked?'[ E ]  ESCAPE!':'[ E ]  (Locked — Restore Power)';
         if(prompt) {
             interactionPrompt.innerText=prompt;
             interactionPrompt.classList.remove('hidden');
@@ -1656,6 +2210,7 @@ function gameLoop(timestamp) {
     }
 
     render(delta);
+    drawGun();
     drawMinimap();
     updateDirectionArrow();
     updateHUD();
@@ -1698,6 +2253,14 @@ document.addEventListener('mousemove', e => {
     player.planeY = oPlaneX*Math.sin(rot)         + player.planeY*Math.cos(rot);
 });
 
+// Left click to shoot (desktop)
+document.addEventListener('mousedown', e => {
+    if(e.button !== 0) return;
+    if(gameState === 'PLAYING' && document.pointerLockElement === document.body) {
+        shootGun();
+    }
+});
+
 function closeNote() {
     noteOverlay.classList.add('hidden');
     gameState='PLAYING';
@@ -1734,6 +2297,20 @@ document.getElementById('btn-settings-pause').onclick = () => {
         settingsMenu.classList.add('hidden');
         pauseMenu.classList.remove('hidden');
     };
+};
+
+// Minimap zoom buttons
+document.getElementById('btn-zoom-in').onclick = () => {
+    const levels = [0.5, 1, 2];
+    const idx = levels.indexOf(minimapZoom);
+    if(idx < levels.length - 1) minimapZoom = levels[idx+1];
+    document.getElementById('zoom-label').innerText = minimapZoom + 'x';
+};
+document.getElementById('btn-zoom-out').onclick = () => {
+    const levels = [0.5, 1, 2];
+    const idx = levels.indexOf(minimapZoom);
+    if(idx > 0) minimapZoom = levels[idx-1];
+    document.getElementById('zoom-label').innerText = minimapZoom + 'x';
 };
 document.getElementById('btn-quit-pause').onclick  = () => location.reload();
 document.getElementById('btn-restart-death').onclick = () => startGame();
@@ -1974,6 +2551,11 @@ if(isMobile) {
         else if(gameState==='PAUSED') resumeGame();
     });
 
+    // SHOOT button
+    bindTouchBtn('tbtn-shoot', () => {
+        if(gameState==='PLAYING') shootGun();
+    });
+
     // ---- Joystick integration into game loop ----------------------------
     // Override the global gameLoop to inject joystick AFTER movePlayer runs.
     // We re-declare the function at module level by assigning to a shadow.
@@ -1997,6 +2579,7 @@ if(isMobile) {
         window._jsInjectMove(delta); // handles joystick vector
         updateHiding(delta);
         updateGhost(delta);
+        updateGun(delta);
         updateSanity(delta);
         updateFlicker(delta);
         updateDust(delta);
@@ -2007,12 +2590,13 @@ if(isMobile) {
         const ent = getClosestInteractable();
         if(ent && tempMsgTimer <= 0) {
             let prompt = '';
-            if(ent.type===ENT_KEY)     prompt = 'Tap USE — Pick up Key';
+            if(ent.type===ENT_KEY)     prompt = `Tap USE — Key ${keysCollected+1}/3`;
             if(ent.type===ENT_BATTERY) prompt = 'Tap USE — Grab Battery';
+            if(ent.type===ENT_AMMO)    prompt = 'Tap USE — Pick up Ammo';
             if(ent.type===ENT_NOTE)    prompt = 'Tap USE — Read Note';
             if(ent.type===ENT_SWITCH)  prompt = 'Tap USE — Use Panel';
             if(ent.type===ENT_LOCKER)  prompt = 'Tap USE — Hide in Locker';
-            if(ent.type==='EXIT')      prompt = exitUnlocked ? 'Tap USE — ESCAPE!' : '(Locked)';
+            if(ent.type==='EXIT')      prompt = exitUnlocked ? 'Tap USE — ESCAPE!' : '(Locked — Restore Power)';
             if(prompt) {
                 interactionPrompt.innerText = prompt;
                 interactionPrompt.classList.remove('hidden');
@@ -2022,6 +2606,7 @@ if(isMobile) {
         }
 
         render(delta);
+        drawGun();
         drawMinimap();
         updateDirectionArrow();
         updateHUD();
@@ -2032,42 +2617,19 @@ if(isMobile) {
         _realRAF(mobileGameLoop);
     }
 
-    // When startGame is called on mobile, we redirect RAF to mobileGameLoop
-    const _origStartGame = startGame;
-    // Override requestAnimationFrame for the first frame so our loop takes over
-    const _origRAFForStart = requestAnimationFrame;
-    // Hook: after startGame sets gameState='PLAYING' and calls requestAnimationFrame(gameLoop),
-    // we cancel that and start our loop instead. We do this by overriding rAF temporarily.
+    // Expose mobileGameLoop globally so startGame's intro callback can access it
+    window.mobileGameLoop = mobileGameLoop;
+
+    // Wire play / restart buttons — simply call startGame (intro sequence now owns loop startup)
     const _origStartBtn = document.getElementById('btn-play');
     _origStartBtn.onclick = null;
-    _origStartBtn.addEventListener('click', () => {
-        // temporarily hijack the first rAF
-        const _origRaf2 = window.requestAnimationFrame;
-        window.requestAnimationFrame = function(cb) {
-            // Restore immediately
-            window.requestAnimationFrame = _origRaf2;
-            // Start our mobile loop instead
-            lastTime = performance.now();
-            _realRAF(mobileGameLoop);
-            return 0;
-        };
-        startGame();
-    });
+    _origStartBtn.addEventListener('click', () => startGame());
 
-    // Also wire restart buttons
+    // Wire restart buttons
     ['btn-restart-death','btn-play-again'].forEach(id => {
         const btn = document.getElementById(id);
-        const prev = btn.onclick;
+        if(!btn) return;
         btn.onclick = null;
-        btn.addEventListener('click', () => {
-            const _origRaf3 = window.requestAnimationFrame;
-            window.requestAnimationFrame = function(cb) {
-                window.requestAnimationFrame = _origRaf3;
-                lastTime = performance.now();
-                _realRAF(mobileGameLoop);
-                return 0;
-            };
-            startGame();
-        });
+        btn.addEventListener('click', () => startGame());
     });
 }
