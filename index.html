@@ -2,23 +2,14 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>The Corridor</title>
     <meta name="description" content="The Corridor - A first-person psychological horror game.">
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-    <!-- Mobile Not Supported -->
-    <div id="mobile-warning">
-        <div class="mobile-inner">
-            <h1>⚠ UNSUPPORTED DEVICE</h1>
-            <p>The Corridor requires a keyboard and mouse.</p>
-            <p>Please play on a desktop PC.</p>
-        </div>
-    </div>
-
-    <!-- Main Game Container (hidden on mobile via CSS) -->
+    <!-- Main Game Container -->
     <div id="game-container">
 
         <!-- Render Canvas -->
@@ -87,12 +78,35 @@
             <div id="crouch-indicator" class="hidden">CROUCHING</div>
 
             <!-- Hiding indicator -->
-            <div id="hiding-indicator" class="hidden">HIDING — Hold SPACE to hold breath</div>
+            <div id="hiding-indicator" class="hidden">HIDING — Hold SPACE / 🫁 to hold breath</div>
 
             <!-- Breath hold -->
             <div id="breath-bar-container" class="hidden">
                 <div class="stat-label">BREATH</div>
                 <div class="stat-bar-bg"><div class="stat-bar" id="breath-bar" style="background:#3498db;"></div></div>
+            </div>
+        </div>
+
+        <!-- ================================================ -->
+        <!-- MOBILE TOUCH CONTROLS                           -->
+        <!-- ================================================ -->
+        <div id="touch-controls" class="hidden">
+            <!-- Left half: virtual joystick zone -->
+            <div id="joystick-zone">
+                <div id="joystick-base">
+                    <div id="joystick-thumb"></div>
+                </div>
+            </div>
+            <!-- Right half: touch-look zone (invisible, captures swipe) -->
+            <div id="look-zone"></div>
+            <!-- Action buttons (bottom-right) -->
+            <div id="touch-buttons">
+                <button class="touch-btn" id="tbtn-interact">⚡<span>USE</span></button>
+                <button class="touch-btn" id="tbtn-flashlight">🔦<span>LIGHT</span></button>
+                <button class="touch-btn" id="tbtn-sprint">⚡<span>RUN</span></button>
+                <button class="touch-btn" id="tbtn-crouch">🦆<span>CROUCH</span></button>
+                <button class="touch-btn" id="tbtn-breath">🫁<span>BREATH</span></button>
+                <button class="touch-btn" id="tbtn-pause">⏸<span>PAUSE</span></button>
             </div>
         </div>
 
@@ -103,7 +117,7 @@
             <div id="note-paper">
                 <div id="note-title">NOTE</div>
                 <p id="note-body"></p>
-                <div class="note-hint">[ E ] — Close</div>
+                <div class="note-hint">[ E ] or tap anywhere — Close</div>
             </div>
         </div>
 
@@ -114,7 +128,7 @@
                 <div id="puzzle-desc">Arrange switches to restore power. Pattern on the wall.</div>
                 <div id="switch-grid"></div>
                 <div id="puzzle-feedback"></div>
-                <div class="note-hint">[ E ] — Exit Puzzle</div>
+                <div class="note-hint">[ E ] or ✕ to exit</div>
             </div>
         </div>
 

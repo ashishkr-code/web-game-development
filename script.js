@@ -11,12 +11,26 @@
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d', { alpha: false });
 
-// Internal render resolution (upscaled to fill screen for performance)
-const RW = 640, RH = 360;
+// -----------------------------------------------------------------------
+// MOBILE DETECTION & ADAPTIVE RESOLUTION
+// -----------------------------------------------------------------------
+const isMobile = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+
+// Adaptive internal resolution: lower on mobile for 30-60 FPS targets
+const RW = isMobile ? 480 : 640;
+const RH = isMobile ? 270 : 360;
 canvas.width = RW;
 canvas.height = RH;
 canvas.style.width = '100vw';
 canvas.style.height = '100vh';
+
+// Helper: request pointer lock only on desktop
+function requestLock() {
+    if(!isMobile) document.body.requestPointerLock();
+}
+function releaseLock() {
+    if(!isMobile && document.pointerLockElement) document.exitPointerLock();
+}
 
 const minimapCanvas = document.getElementById('minimap');
 const mCtx = minimapCanvas.getContext('2d');
@@ -1548,7 +1562,11 @@ function startGame() {
     breathingOverlay.style.animationIterationCount='infinite';
 
     setObjectiveTarget();
-    document.body.requestPointerLock();
+    requestLock();
+    // Show touch controls on mobile
+    if(isMobile) {
+        document.getElementById('touch-controls').classList.remove('hidden');
+    }
     gameState='PLAYING';
     lastTime=performance.now();
     requestAnimationFrame(gameLoop);
@@ -1556,14 +1574,16 @@ function startGame() {
 
 function pauseGame() {
     gameState='PAUSED';
-    document.exitPointerLock();
+    releaseLock();
+    if(isMobile) document.getElementById('touch-controls').classList.add('hidden');
     pauseMenu.classList.remove('hidden');
 }
 
 function resumeGame() {
     pauseMenu.classList.add('hidden');
     settingsMenu.classList.add('hidden');
-    document.body.requestPointerLock();
+    if(isMobile) document.getElementById('touch-controls').classList.remove('hidden');
+    requestLock();
     gameState='PLAYING';
     lastTime=performance.now();
     requestAnimationFrame(gameLoop);
@@ -1580,7 +1600,8 @@ function gameOver(reason='She found you') {
 
 function winGame() {
     gameState='WON';
-    document.exitPointerLock();
+    releaseLock();
+    if(isMobile) document.getElementById('touch-controls').classList.add('hidden');
     hudEl.classList.add('hidden');
     document.getElementById('victory-time').innerText='Time: '+formatTime(playTime);
     const prev=parseFloat(localStorage.getItem('corridor_best_v3')||'0');
@@ -1666,6 +1687,8 @@ document.addEventListener('keydown', e => {
 document.addEventListener('keyup', e => { kDown[e.key.toLowerCase()]=false; });
 
 document.addEventListener('mousemove', e => {
+    // Desktop only: pointer lock mouse look
+    if(isMobile) return;
     if(gameState!=='PLAYING'||document.pointerLockElement!==document.body) return;
     const rot = -e.movementX * mouseSensitivity;
     const oDirX=player.dirX, oPlaneX=player.planeX;
@@ -1678,7 +1701,8 @@ document.addEventListener('mousemove', e => {
 function closeNote() {
     noteOverlay.classList.add('hidden');
     gameState='PLAYING';
-    document.body.requestPointerLock();
+    if(isMobile) document.getElementById('touch-controls').classList.remove('hidden');
+    else requestLock();
     lastTime=performance.now();
     requestAnimationFrame(gameLoop);
 }
@@ -1688,7 +1712,8 @@ function closePuzzle() {
         puzzleOverlay.classList.add('hidden');
         puzzleActive=false;
         gameState='PLAYING';
-        document.body.requestPointerLock();
+        if(isMobile) document.getElementById('touch-controls').classList.remove('hidden');
+        else requestLock();
         lastTime=performance.now();
         requestAnimationFrame(gameLoop);
     }
@@ -1748,3 +1773,301 @@ window.addEventListener('resize', () => {
     canvas.style.width='100vw';
     canvas.style.height='100vh';
 });
+
+// Allow tapping note overlay to close on mobile
+document.getElementById('note-overlay').addEventListener('touchend', e => {
+    if(gameState==='NOTE' && e.target.id !== 'switch-grid') {
+        e.preventDefault();
+        closeNote();
+    }
+}, { passive: false });
+
+// -----------------------------------------------------------------------
+// MOBILE TOUCH SYSTEM
+// -----------------------------------------------------------------------
+if(isMobile) {
+    // ---- Virtual Joystick ------------------------------------------------
+    const joystickZone  = document.getElementById('joystick-zone');
+    const joystickBase  = document.getElementById('joystick-base');
+    const joystickThumb = document.getElementById('joystick-thumb');
+
+    const JS_RADIUS = 45; // max thumb travel in px
+    let jsActiveTouchId = null;
+    let jsOriginX = 0, jsOriginY = 0; // base centre in page coords
+    let jsVecX = 0, jsVecY = 0;       // normalised joystick vector [-1..1]
+
+    // Position the joystick base relative to the first touch inside the zone
+    joystickZone.addEventListener('touchstart', e => {
+        e.preventDefault();
+        if(jsActiveTouchId !== null) return; // already tracking one finger
+        const t = e.changedTouches[0];
+        jsActiveTouchId = t.identifier;
+
+        // Move the visible base to the touch point
+        const rect = joystickZone.getBoundingClientRect();
+        const bx = t.clientX - rect.left;
+        const by = t.clientY - rect.top;
+        joystickBase.style.left = (bx - joystickBase.offsetWidth/2) + 'px';
+        joystickBase.style.top  = (by - joystickBase.offsetHeight/2) + 'px';
+        joystickBase.style.position = 'absolute';
+
+        jsOriginX = t.clientX;
+        jsOriginY = t.clientY;
+        jsVecX = 0; jsVecY = 0;
+        joystickThumb.style.transform = 'translate(0,0)';
+    }, { passive: false });
+
+    joystickZone.addEventListener('touchmove', e => {
+        e.preventDefault();
+        for(const t of e.changedTouches) {
+            if(t.identifier !== jsActiveTouchId) continue;
+            const dx = t.clientX - jsOriginX;
+            const dy = t.clientY - jsOriginY;
+            const dist = Math.sqrt(dx*dx + dy*dy);
+            const clampedDist = Math.min(dist, JS_RADIUS);
+            const angle = Math.atan2(dy, dx);
+            const tx = Math.cos(angle) * clampedDist;
+            const ty = Math.sin(angle) * clampedDist;
+            joystickThumb.style.transform = `translate(${tx}px,${ty}px)`;
+            jsVecX = tx / JS_RADIUS;
+            jsVecY = ty / JS_RADIUS;
+        }
+    }, { passive: false });
+
+    function jsRelease(e) {
+        for(const t of e.changedTouches) {
+            if(t.identifier === jsActiveTouchId) {
+                jsActiveTouchId = null;
+                jsVecX = 0; jsVecY = 0;
+                joystickThumb.style.transform = 'translate(0,0)';
+            }
+        }
+    }
+    joystickZone.addEventListener('touchend',    jsRelease, { passive: false });
+    joystickZone.addEventListener('touchcancel', jsRelease, { passive: false });
+
+    // Inject joystick input into player movement each frame.
+    // We extend movePlayer to also read jsVecX/jsVecY.
+    const _origMovePlayer = movePlayer;
+    window._jsInjectMove = function(delta) {
+        if(!player.isHiding && (jsVecX !== 0 || jsVecY !== 0)) {
+            // jsVec is in screen space: Y = forward/back, X = strafe
+            const spd = (player.isSprinting && player.stamina>0) ? 5.5 : (player.isCrouching ? 1.5 : 3.0);
+            const step = spd * delta;
+            // Forward (negative jsVecY = up on screen = forward)
+            const fwdX = -player.dirX * jsVecY;
+            const fwdY = -player.dirY * jsVecY;
+            // Strafe
+            const strX = player.planeX * jsVecX;
+            const strY = player.planeY * jsVecX;
+            const mx = fwdX + strX, my = fwdY + strY;
+            if(isWalkable((player.x + mx*step)|0, player.y|0)) player.x += mx*step;
+            if(isWalkable(player.x|0, (player.y + my*step)|0)) player.y += my*step;
+
+            // Noise from joystick movement
+            player.noiseLevel = Math.max(player.noiseLevel, player.isSprinting ? 3 : (player.isCrouching ? 0.3 : 1));
+            if(Math.random() < 0.04 && player.noiseLevel > 0.5) playFootsteps();
+
+            // Explore
+            const px=player.x|0, py=player.y|0;
+            for(let dy2=-2;dy2<=2;dy2++) for(let dx2=-2;dx2<=2;dx2++) {
+                const ex=px+dx2,ey=py+dy2;
+                if(ex>=0&&ex<MAP_W&&ey>=0&&ey<MAP_H) exploredMap[ey][ex]=true;
+            }
+        }
+    };
+
+    // Patch gameLoop to call joystick injection after movePlayer
+    const _origGameLoop_ref = gameLoop;
+    // We hook via the existing gameLoop by monkey-patching the global:
+    const _rawGameLoop = gameLoop;
+    // Override gameLoop to call JS injection
+    // Since gameLoop is declared with function keyword it's hoisted — we wrap it:
+    const _gameLoopMobileWrapper = function(timestamp) {
+        // Already handled by modified gameLoop below — see end of file
+    };
+
+    // ---- Look Zone (right-side swipe for camera rotation) ---------------
+    const lookZone = document.getElementById('look-zone');
+    let lookActiveTouchId = null;
+    let lookLastX = 0;
+    const TOUCH_SENS = 0.008; // radians per pixel
+
+    lookZone.addEventListener('touchstart', e => {
+        e.preventDefault();
+        if(lookActiveTouchId !== null) return;
+        const t = e.changedTouches[0];
+        lookActiveTouchId = t.identifier;
+        lookLastX = t.clientX;
+    }, { passive: false });
+
+    lookZone.addEventListener('touchmove', e => {
+        e.preventDefault();
+        if(gameState !== 'PLAYING') return;
+        for(const t of e.changedTouches) {
+            if(t.identifier !== lookActiveTouchId) continue;
+            const dx = t.clientX - lookLastX;
+            lookLastX = t.clientX;
+            const rot = -dx * TOUCH_SENS * (mouseSensitivity / 0.0025);
+            const oDirX  = player.dirX,   oPlaneX = player.planeX;
+            player.dirX   = player.dirX   * Math.cos(rot) - player.dirY   * Math.sin(rot);
+            player.dirY   = oDirX          * Math.sin(rot) + player.dirY   * Math.cos(rot);
+            player.planeX = player.planeX  * Math.cos(rot) - player.planeY * Math.sin(rot);
+            player.planeY = oPlaneX        * Math.sin(rot) + player.planeY * Math.cos(rot);
+        }
+    }, { passive: false });
+
+    function lookRelease(e) {
+        for(const t of e.changedTouches) {
+            if(t.identifier === lookActiveTouchId) lookActiveTouchId = null;
+        }
+    }
+    lookZone.addEventListener('touchend',    lookRelease, { passive: false });
+    lookZone.addEventListener('touchcancel', lookRelease, { passive: false });
+
+    // ---- Action Buttons --------------------------------------------------
+    function bindTouchBtn(id, onDown, onUp) {
+        const el = document.getElementById(id);
+        if(!el) return;
+        el.addEventListener('touchstart', e => { e.preventDefault(); el.classList.add('pressed'); onDown && onDown(); }, { passive: false });
+        el.addEventListener('touchend',   e => { e.preventDefault(); el.classList.remove('pressed'); onUp && onUp(); },   { passive: false });
+        el.addEventListener('touchcancel',e => { e.preventDefault(); el.classList.remove('pressed'); onUp && onUp(); },   { passive: false });
+    }
+
+    // Interact
+    bindTouchBtn('tbtn-interact', () => {
+        if(gameState==='PLAYING') doInteract();
+        else if(gameState==='NOTE') closeNote();
+        else if(gameState==='PUZZLE') closePuzzle();
+    });
+
+    // Flashlight toggle (tap)
+    bindTouchBtn('tbtn-flashlight', () => {
+        if(gameState==='PLAYING' && player.battery > 0) {
+            // Toggle via synthetic keydown
+            const evt = new KeyboardEvent('keydown', { key: 'f', bubbles: true });
+            document.dispatchEvent(evt);
+        }
+    });
+
+    // Sprint (hold)
+    bindTouchBtn('tbtn-sprint',
+        () => { kDown['shift'] = true; },
+        () => { kDown['shift'] = false; }
+    );
+
+    // Crouch (hold)
+    bindTouchBtn('tbtn-crouch',
+        () => { kDown['c'] = true; },
+        () => { kDown['c'] = false; }
+    );
+
+    // Breath hold (hold)
+    bindTouchBtn('tbtn-breath',
+        () => { kDown[' '] = true; },
+        () => { kDown[' '] = false; }
+    );
+
+    // Pause
+    bindTouchBtn('tbtn-pause', () => {
+        if(gameState==='PLAYING')    pauseGame();
+        else if(gameState==='PAUSED') resumeGame();
+    });
+
+    // ---- Joystick integration into game loop ----------------------------
+    // Override the global gameLoop to inject joystick AFTER movePlayer runs.
+    // We re-declare the function at module level by assigning to a shadow.
+    // The original gameLoop calls requestAnimationFrame(gameLoop) at its end,
+    // so we intercept by replacing the requestAnimationFrame callback.
+    const _realRAF = window.requestAnimationFrame.bind(window);
+    window._mobileGameLoopActive = false;
+
+    function mobileGameLoop(timestamp) {
+        if(gameState !== 'PLAYING') return;
+        const delta = Math.min((timestamp - lastTime) / 1000, 0.05);
+        lastTime = timestamp;
+        playTime += delta;
+        interactCooldown = Math.max(0, interactCooldown - delta);
+        tempMsgTimer = Math.max(0, tempMsgTimer - delta);
+        if(tempMsgTimer <= 0 && !interactionPrompt.classList.contains('hidden')) {
+            interactionPrompt.classList.add('hidden');
+        }
+
+        movePlayer(delta);          // handles kDown WASD + keyboard
+        window._jsInjectMove(delta); // handles joystick vector
+        updateHiding(delta);
+        updateGhost(delta);
+        updateSanity(delta);
+        updateFlicker(delta);
+        updateDust(delta);
+        updateHorrorEvents(delta);
+        setObjectiveTarget();
+
+        // Interaction prompt
+        const ent = getClosestInteractable();
+        if(ent && tempMsgTimer <= 0) {
+            let prompt = '';
+            if(ent.type===ENT_KEY)     prompt = 'Tap USE — Pick up Key';
+            if(ent.type===ENT_BATTERY) prompt = 'Tap USE — Grab Battery';
+            if(ent.type===ENT_NOTE)    prompt = 'Tap USE — Read Note';
+            if(ent.type===ENT_SWITCH)  prompt = 'Tap USE — Use Panel';
+            if(ent.type===ENT_LOCKER)  prompt = 'Tap USE — Hide in Locker';
+            if(ent.type==='EXIT')      prompt = exitUnlocked ? 'Tap USE — ESCAPE!' : '(Locked)';
+            if(prompt) {
+                interactionPrompt.innerText = prompt;
+                interactionPrompt.classList.remove('hidden');
+            }
+        } else if(tempMsgTimer <= 0) {
+            interactionPrompt.classList.add('hidden');
+        }
+
+        render(delta);
+        drawMinimap();
+        updateDirectionArrow();
+        updateHUD();
+
+        const best = parseFloat(localStorage.getItem('corridor_best_v3') || '0');
+        document.getElementById('best-time-display').innerText = 'Best: ' + (best ? formatTime(best) : '--');
+
+        _realRAF(mobileGameLoop);
+    }
+
+    // When startGame is called on mobile, we redirect RAF to mobileGameLoop
+    const _origStartGame = startGame;
+    // Override requestAnimationFrame for the first frame so our loop takes over
+    const _origRAFForStart = requestAnimationFrame;
+    // Hook: after startGame sets gameState='PLAYING' and calls requestAnimationFrame(gameLoop),
+    // we cancel that and start our loop instead. We do this by overriding rAF temporarily.
+    const _origStartBtn = document.getElementById('btn-play');
+    _origStartBtn.onclick = null;
+    _origStartBtn.addEventListener('click', () => {
+        // temporarily hijack the first rAF
+        const _origRaf2 = window.requestAnimationFrame;
+        window.requestAnimationFrame = function(cb) {
+            // Restore immediately
+            window.requestAnimationFrame = _origRaf2;
+            // Start our mobile loop instead
+            lastTime = performance.now();
+            _realRAF(mobileGameLoop);
+            return 0;
+        };
+        startGame();
+    });
+
+    // Also wire restart buttons
+    ['btn-restart-death','btn-play-again'].forEach(id => {
+        const btn = document.getElementById(id);
+        const prev = btn.onclick;
+        btn.onclick = null;
+        btn.addEventListener('click', () => {
+            const _origRaf3 = window.requestAnimationFrame;
+            window.requestAnimationFrame = function(cb) {
+                window.requestAnimationFrame = _origRaf3;
+                lastTime = performance.now();
+                _realRAF(mobileGameLoop);
+                return 0;
+            };
+            startGame();
+        });
+    });
+}

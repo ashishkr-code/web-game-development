@@ -454,19 +454,149 @@ button:hover {
 /* Utils */
 .hidden { display: none !important; }
 
-/* Mobile Guard */
-#mobile-warning {
-    display: none;
-    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-    background: #000; z-index: 9999;
-    justify-content: center; align-items: center; text-align: center;
-    padding: 30px;
+/* ---- Touch Controls ---- */
+#touch-controls {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    z-index: 25;
+    pointer-events: none; /* children opt-in */
+    display: flex;
 }
 
-.mobile-inner h1 { font-size: 28px; letter-spacing: 4px; margin-bottom: 20px; color: #f00; }
-.mobile-inner p { font-size: 16px; color: #aaa; margin: 8px 0; }
+/* Left joystick zone */
+#joystick-zone {
+    position: absolute;
+    left: 0; bottom: 0;
+    width: 50%; height: 55%;
+    pointer-events: all;
+    display: flex; align-items: flex-end; justify-content: flex-start;
+    padding: 20px;
+}
 
-@media (pointer: coarse), (max-width: 768px) {
-    #mobile-warning { display: flex !important; }
-    #game-container { display: none !important; }
+#joystick-base {
+    width: 110px; height: 110px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.08);
+    border: 2px solid rgba(255,255,255,0.18);
+    position: relative;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+}
+
+#joystick-thumb {
+    width: 48px; height: 48px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.35);
+    border: 2px solid rgba(255,255,255,0.6);
+    position: absolute;
+    transition: transform 0.05s linear;
+    pointer-events: none;
+}
+
+/* Right look zone (invisible swipe area) */
+#look-zone {
+    position: absolute;
+    right: 0; top: 0;
+    width: 50%; height: 100%;
+    pointer-events: all;
+}
+
+/* Action buttons grid (bottom-right) */
+#touch-buttons {
+    position: absolute;
+    bottom: 16px; right: 10px;
+    display: grid;
+    grid-template-columns: repeat(3, 62px);
+    grid-template-rows: repeat(2, 62px);
+    gap: 8px;
+    pointer-events: all;
+}
+
+.touch-btn {
+    width: 62px; height: 62px;
+    background: rgba(0,0,0,0.55);
+    border: 1.5px solid rgba(255,255,255,0.22);
+    border-radius: 12px;
+    color: #fff;
+    font-size: 22px;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 2px;
+    padding: 0;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    transition: background 0.1s, border-color 0.1s;
+    pointer-events: all;
+    font-family: inherit;
+    letter-spacing: 0;
+    width: 62px; /* override global button width */
+}
+
+.touch-btn span {
+    font-size: 9px;
+    letter-spacing: 1px;
+    color: rgba(255,255,255,0.6);
+    text-transform: uppercase;
+}
+
+.touch-btn:active,
+.touch-btn.pressed {
+    background: rgba(255,255,255,0.18);
+    border-color: rgba(255,255,255,0.55);
+}
+
+#tbtn-pause   { grid-column: 3; grid-row: 1; font-size: 18px; }
+#tbtn-flashlight { grid-column: 1; grid-row: 1; }
+#tbtn-sprint  { grid-column: 2; grid-row: 1; }
+#tbtn-interact{ grid-column: 3; grid-row: 2; background: rgba(255,200,0,0.18); border-color: rgba(255,200,0,0.4); }
+#tbtn-crouch  { grid-column: 1; grid-row: 2; }
+#tbtn-breath  { grid-column: 2; grid-row: 2; }
+
+/* ---- Responsive: Global desktop override for buttons ---- */
+@media (pointer: fine) {
+    button { width: 280px; }
+    .touch-btn { width: 62px; }
+}
+
+/* ---- Responsive: all screens ---- */
+@media (max-width: 600px) {
+    .menu-screen h1 { font-size: 36px; letter-spacing: 6px; }
+    #title-text      { font-size: 40px; letter-spacing: 8px; }
+    button           { width: 80vw; font-size: 14px; padding: 12px 0; }
+    #minimap         { width: 100px; height: 100px; }
+    minimapCanvas    { width: 100px; height: 100px; }
+    #hud-topleft     { top: 10px; left: 10px; }
+    .stat-bar-bg     { width: 110px; }
+    #hud-topcenter   { top: 10px; }
+    #objective-text  { font-size: 10px; max-width: 180px; }
+    #direction-arrow { font-size: 20px; }
+    #interaction-prompt { font-size: 12px; bottom: 220px; }
+    #crouch-indicator, #hiding-indicator { bottom: 240px; font-size: 10px; }
+    #breath-bar-container { bottom: 260px; }
+    #note-paper      { padding: 24px 20px; }
+    #note-body       { font-size: 15px; }
+    #puzzle-box      { padding: 20px; }
+    .switch-btn      { width: 48px; height: 72px; }
+}
+
+@media (max-width: 400px) {
+    #touch-buttons { grid-template-columns: repeat(3, 54px); grid-template-rows: repeat(2, 54px); gap: 6px; }
+    .touch-btn     { width: 54px; height: 54px; font-size: 18px; }
+    #joystick-base { width: 90px; height: 90px; }
+    #joystick-thumb{ width: 38px; height: 38px; }
+}
+
+/* Landscape phone — shrink joystick, reposition buttons */
+@media (max-height: 480px) and (orientation: landscape) {
+    #touch-buttons { bottom: 8px; right: 8px; grid-template-columns: repeat(6, 52px); grid-template-rows: 52px; }
+    #tbtn-pause    { grid-column: 6; grid-row: 1; }
+    #tbtn-flashlight{ grid-column: 1; grid-row: 1; }
+    #tbtn-sprint   { grid-column: 2; grid-row: 1; }
+    #tbtn-interact { grid-column: 5; grid-row: 1; }
+    #tbtn-crouch   { grid-column: 3; grid-row: 1; }
+    #tbtn-breath   { grid-column: 4; grid-row: 1; }
+    #joystick-zone { height: 80%; }
+    .touch-btn     { width: 52px; height: 52px; }
+    #minimap       { width: 80px; height: 80px; }
+    #hud-topcenter { display: none; }
 }
